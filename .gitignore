@@ -1,0 +1,25 @@
+__pycache__/
+*.pyc
+*.log
+test_screenshot.png
+server_stdout.log
+server_stderr.log
+server_error.log
+pilot.user.js
+
+# DeepSeek提取脚本（不属于Browser Pilot）
+check_*.py
+compare_extracts.py
+extract_*.py
+fetch_*.py
+find_scroll*.py
+open_deepseek.py
+probe_*.py
+test_broadcast*.py
+test_deepseek_alive.py
+test_execjs.py
+test_screenshot.py
+test_target.py
+verify_roles.py
+extend_extract.py
+debug_screenshot*.py
