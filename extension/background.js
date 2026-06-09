@@ -23,12 +23,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         }
 
         // 直接用 world: "MAIN" 注入，不受页面 CSP 限制
+        // 注意：不使用 new Function()，改用 eval 直接执行（扩展注入的代码不受 CSP 限制）
         chrome.scripting.executeScript({
             target: { tabId: sender.tab.id },
             func: (userCode) => {
                 try {
                     // 在 MAIN world 执行，CSP 不拦截扩展注入的代码
-                    const result = new Function(userCode)();
+                    // 注意：不使用 new Function()，避免 CSP unsafe-eval 限制
+                    // eslint-disable-next-line no-eval
+                    const result = eval(userCode);
                     // 处理异步结果
                     if (result && typeof result.then === 'function') {
                         return result.then(r => ({ success: true, value: r }));
