@@ -68,13 +68,19 @@
                     executeCommand(data.command);
                 }
             })
-            .catch(() => {});
+            .catch(err => {
+                console.error('[BP] Poll error:', err);
+            });
     }
 
     // ============================================================
     // 执行指令
     // ============================================================
     async function executeCommand(cmd) {
+        if (isRunning) {
+            console.warn('[BP] 已有指令在执行，跳过');
+            return;
+        }
         isRunning = true;
         const action = cmd.action;
         const params = cmd.params || {};
