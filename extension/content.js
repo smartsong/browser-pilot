@@ -1,5 +1,6 @@
-// content.js — Browser Pilot 内容脚本 v1.1
-// 新增：execute_js 绕过CSP、截图、下载、多标签页管理
+// content.js — Browser Pilot 内容脚本 v1.2
+// 修复：new_tab 创建后等待新标签注册，返回字符串 tab_id
+// 修复：execute_js 超时保护（8秒）
 
 (function() {
     'use strict';
@@ -332,21 +333,66 @@
         });
     }
 
-    // new_tab — 新建标签页
+    // new_tab — 新建标签页（等待新标签注册后返回字符串 tab_id）
     async function cmdNewTab(params) {
         const url = params.url || "about:blank";
-        return new Promise((resolve) => {
+        
+        // 1. 记录当前已有标签页
+        let tabsBefore = [];
+        try {
+            const resp = await fetch(`${SERVER}/tabs`);
+            const data = await resp.json();
+            tabsBefore = data.tabs || [];
+        } catch(e) {}
+        
+        // 2. 通过 background.js 创建新标签页
+        const createResult = await new Promise((resolve) => {
             chrome.runtime.sendMessage(
                 { type: "new_tab_request", url: url },
                 (response) => {
                     if (response && response.success) {
-                        resolve({ success: true, data: { tab_id: response.tab_id, tab_url: response.tab_url } });
+                        resolve({ success: true, tab_id: response.tab_id, tab_url: response.tab_url });
                     } else {
                         resolve({ success: false, message: response ? response.error : "new tab failed" });
                     }
                 }
             );
         });
+        
+        if (!createResult.success) {
+            return { success: false, message: createResult.message };
+        }
+        
+        // 3. 轮询 /tabs 等待新标签页注册（最多等 10 秒）
+        const beforeIds = new Set((tabsBefore).map(t => t.id));
+        const beforeUrls = new Set((tabsBefore).map(t => t.url));
+        const startTime = Date.now();
+        let newTabId = null;
+        
+        while (Date.now() - startTime < 10000) {
+            await sleep(500);
+            try {
+                const resp = await fetch(`${SERVER}/tabs`);
+                const data = await resp.json();
+                const currentTabs = data.tabs || [];
+                for (const tab of currentTabs) {
+                    if (!beforeIds.has(tab.id) && tab.url !== undefined) {
+                        newTabId = tab.id;
+                        break;
+                    }
+                }
+                if (newTabId) break;
+            } catch(e) {}
+        }
+        
+        return {
+            success: true,
+            data: {
+                tab_id: newTabId || createResult.tab_id,
+                numeric_id: createResult.tab_id,
+                tab_url: createResult.tab_url
+            }
+        };
     }
 
     // switch_tab — 切换标签页

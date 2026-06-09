@@ -11,6 +11,7 @@ import time
 import uuid
 import sys
 import os
+import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
@@ -132,7 +133,8 @@ class PilotHandler(BaseHTTPRequestHandler):
                 "command": cmd,
                 "status": "pending",
                 "result": None,
-                "target_tab": tab_id
+                "target_tab": tab_id,
+                "created_at": time.time()
             }
             target = f" -> tab:{tab_id}" if tab_id else " (广播)"
             print(f"[Pilot] 新指令 {action}{target} [{tid}]")
@@ -180,14 +182,41 @@ class PilotHandler(BaseHTTPRequestHandler):
         print(f"[Pilot] {args[0]} {args[1]} {args[2]}")
 
 
+def _cleanup_loop():
+    """定时清理过期任务和过期标签页"""
+    while True:
+        time.sleep(60)
+        now = time.time()
+        # 清理 300 秒前完成的 consumed 任务
+        before_clean = len(tasks)
+        for tid, t in list(tasks.items()):
+            if t["status"] == "consumed":
+                # 检查是否有 created_at 字段
+                created = t.get("created_at", now)
+                if now - created > 300:
+                    del tasks[tid]
+        # 清理 600 秒未活跃的 tab（超时时间更长）
+        for tid, info in list(tabs.items()):
+            if now - info["last_seen"] > 600:
+                del tabs[tid]
+        after_clean = len(tasks)
+        if before_clean != after_clean:
+            print(f"[Pilot] 清理: {before_clean - after_clean} 个过期任务, 当前任务: {after_clean}, 标签页: {len(tabs)}")
+
+
 def main():
+    # 启动后台清理线程
+    cleaner = threading.Thread(target=_cleanup_loop, daemon=True)
+    cleaner.start()
+    
     server = HTTPServer((HOST, PORT), PilotHandler)
-    print(f"[Browser Pilot v0.3.1] 服务已启动 -> http://{HOST}:{PORT}")
+    print(f"[Browser Pilot v0.3.2] 服务已启动 -> http://{HOST}:{PORT}")
     print(f"  POST /command       提交指令（支持 tab_id 参数定向）")
     print(f"  GET  /poll?tab_id=   content.js 轮询（tab_id 必传）")
     print(f"  GET  /register       content.js 注册/心跳")
     print(f"  GET  /tabs          列出活跃标签页")
     print(f"  GET  /result?task_id=  查询结果")
+    print(f"  cleanup             每60秒自动清理过期任务和标签页")
     print()
     try:
         server.serve_forever()
