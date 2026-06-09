@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Browser Pilot — 本地服务 v0.3.1
-新增：screenshot / download / new_tab / switch_tab / close_tab / list_tabs
-修复：去掉所有 [DEBUG] 输出
+Browser Pilot — 本地服务 v0.3.2
+修复：
+  - list_tabs result 不再 pop，改为标记 consumed
+  - new_tab 等待注册后返回字符串 tab_id
+  - 支持数字 tab_id → 字符串 tab_id 映射
+  - 后台清理线程（60秒）
+  - CORS 预检完整响应
 """
 
 import json
@@ -30,7 +34,7 @@ numeric_to_string = {}  # 数字 tab_id -> 字符串 tab_id 映射（new_tab 用
 
 
 class PilotHandler(BaseHTTPRequestHandler):
-    
+
     # ---------- GET ----------
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -38,44 +42,35 @@ class PilotHandler(BaseHTTPRequestHandler):
         qs = parse_qs(parsed.query)
 
         if path == "/health":
-            self._json(200, {
-                "status": "ok",
-                "tasks_pending": sum(1 for t in tasks.values() if t["status"] == "pending"),
-                "tabs_active": len(self._active_tabs())
-            })
-
-        elif path == "/register":
-            tab_id = qs.get("tab_id", [None])[0]
-            if tab_id:
-                now = time.time()
-                old = tabs.get(tab_id)
-                tabs[tab_id] = {
-                    "title": qs.get("title", [""])[0],
-                    "url": qs.get("url", [""])[0],
-                    "first_seen": old["first_seen"] if old else now,
-                    "last_seen": now
-                }
-                self._json(200, {"status": "ok", "tab_id": tab_id})
-            else:
-                self._json(400, {"error": "missing tab_id"})
+            self._json(200, {"status": "ok", "version": "0.3.2", "active_tabs": len(self._active_tabs())})
 
         elif path == "/tabs":
             active = self._active_tabs()
             self._json(200, {
-                "count": len(active),
-                "tabs": [{"id": tid, **info} for tid, info in active.items()]
+                "tabs": [{"id": tid, "title": info["title"], "url": info["url"]}
+                          for tid, info in active.items()]
             })
 
         elif path == "/poll":
             tab_id = qs.get("tab_id", [None])[0]
-            for tid, task in list(tasks.items()):
-                if task["status"] != "pending":
-                    continue
-                target = task.get("target_tab")
-                if target is None or target == tab_id:
-                    task["status"] = "running"
-                    self._json(200, {"task_id": tid, "command": task["command"]})
+            if not tab_id:
+                self._json(400, {"error": "missing tab_id"})
+                return
+
+            if tab_id in tasks:
+                t = tasks[tab_id]
+                if t["status"] == "pending":
+                    t["status"] = "running"
+                    self._json(200, {"task_id": tab_id, "command": t["command"]})
                     return
+
+            # 查找发给这个 tab 的待处理任务
+            for tid, t in tasks.items():
+                if t["status"] == "pending" and (t["target_tab"] is None or t["target_tab"] == tab_id):
+                    t["status"] = "running"
+                    self._json(200, {"task_id": tid, "command": t["command"]})
+                    return
+
             self._json(200, {"task_id": None, "command": None})
 
         elif path == "/result":
@@ -83,11 +78,9 @@ class PilotHandler(BaseHTTPRequestHandler):
             if tid and tid in tasks:
                 t = tasks[tid]
                 if t["status"] == "done":
-                    # 不直接 pop，标记为 consumed 避免重复查询
                     t["status"] = "consumed"
                     self._json(200, t["result"])
                 elif t["status"] == "consumed":
-                    # 已查询过，直接返回结果
                     self._json(200, t["result"])
                 else:
                     self._json(200, {"status": t["status"], "result": None})
@@ -127,7 +120,15 @@ class PilotHandler(BaseHTTPRequestHandler):
                 self._json(400, {"error": f"unknown action: {action}"})
                 return
 
-            tab_id = data.get("tab_id")  # 可选：指定标签页
+            # 统一 tab_id 处理：接受数字或字符串 ID
+            raw_tab = data.get("tab_id")
+            tab_id = None
+            if raw_tab:
+                if str(raw_tab) in numeric_to_string:
+                    tab_id = numeric_to_string[str(raw_tab)]
+                else:
+                    tab_id = str(raw_tab)
+
             tid = str(uuid.uuid4())[:8]
             tasks[tid] = {
                 "command": cmd,
@@ -153,12 +154,35 @@ class PilotHandler(BaseHTTPRequestHandler):
             if tid and tid in tasks:
                 tasks[tid]["status"] = "done"
                 tasks[tid]["result"] = data.get("result", {})
+                
+                # 如果是 new_tab 的结果，记录数字→字符串映射
+                cmd = tasks[tid]["command"]
+                if cmd.get("action") == "new_tab":
+                    result = data.get("result", {})
+                    if result.get("success") and "data" in result:
+                        numeric_id = result["data"].get("numeric_id")
+                        string_id = result["data"].get("tab_id")
+                        if numeric_id and string_id:
+                            numeric_to_string[str(numeric_id)] = string_id
+                            print(f"[Pilot] 记录 tab 映射：{numeric_id} → {string_id}")
+                
                 self._json(200, {"status": "ok"})
             else:
                 self._json(404, {"error": f"task {tid} not found"})
 
         else:
             self._json(404, {"error": "not found"})
+
+    # ---------- OPTIONS (CORS) ----------
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Max-Age", "86400")
+        self.end_headers()
+        self.wfile.write(b"")
 
     # ---------- 辅助 ----------
     def _active_tabs(self):
@@ -175,9 +199,6 @@ class PilotHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(data, ensure_ascii=False).encode("utf-8"))
 
-    def do_OPTIONS(self):
-        self._json(200, {})
-
     def log_message(self, format, *args):
         print(f"[Pilot] {args[0]} {args[1]} {args[2]}")
 
@@ -191,24 +212,23 @@ def _cleanup_loop():
         before_clean = len(tasks)
         for tid, t in list(tasks.items()):
             if t["status"] == "consumed":
-                # 检查是否有 created_at 字段
                 created = t.get("created_at", now)
                 if now - created > 300:
                     del tasks[tid]
-        # 清理 600 秒未活跃的 tab（超时时间更长）
+        # 清理 600 秒未活跃的 tab
         for tid, info in list(tabs.items()):
             if now - info["last_seen"] > 600:
                 del tabs[tid]
         after_clean = len(tasks)
         if before_clean != after_clean:
-            print(f"[Pilot] 清理: {before_clean - after_clean} 个过期任务, 当前任务: {after_clean}, 标签页: {len(tabs)}")
+            print(f"[Pilot] 清理：{before_clean - after_clean} 个过期任务, 当前任务: {after_clean}, 标签页: {len(tabs)}")
 
 
 def main():
     # 启动后台清理线程
     cleaner = threading.Thread(target=_cleanup_loop, daemon=True)
     cleaner.start()
-    
+
     server = HTTPServer((HOST, PORT), PilotHandler)
     print(f"[Browser Pilot v0.3.2] 服务已启动 -> http://{HOST}:{PORT}")
     print(f"  POST /command       提交指令（支持 tab_id 参数定向）")
@@ -216,6 +236,7 @@ def main():
     print(f"  GET  /register       content.js 注册/心跳")
     print(f"  GET  /tabs          列出活跃标签页")
     print(f"  GET  /result?task_id=  查询结果")
+    print(f"  GET  /health        健康检查")
     print(f"  cleanup             每60秒自动清理过期任务和标签页")
     print()
     try:
