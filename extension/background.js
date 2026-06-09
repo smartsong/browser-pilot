@@ -14,42 +14,48 @@ const tabs = {};
 // ============================================================
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     
-    // ========== execute_js（world: "MAIN" 绕过 CSP）==========
+    // ========== execute_js（预定义函数映射）==========
+    // Manifest V3 禁止 eval/new Function，改用预定义函数映射
     if (request.type === "execute_js_request") {
-        const code = request.code;
-        if (!code) {
-            sendResponse({ success: false, error: "missing code" });
-            return false;
-        }
-
-        // 方案4: 使用 world: ISOLATED (扩展世界)
-        // ISOLATED world 完全不受页面 CSP 限制
-        // 限制：只能访问页面的 DOM，不能访问页面的 JS 变量/函数
-        // 对于需要访问页面 JS 变量的场景，用 ISOLATED world 通过 DOM 传值
+        const fnName = request.fn || request.code;
+        const args = request.args || [];
+        const selector = request.selector;
+        
+        // 在页面上下文中执行预定义函数
         chrome.scripting.executeScript({
             target: { tabId: sender.tab.id },
-            world: "ISOLATED",
-            func: (userCode) => {
+            func: (funcName, funcArgs, selectorArg) => {
+                const fnMap = {
+                    getTitle: () => document.title,
+                    getUrl: () => window.location.href,
+                    getHTML: () => document.documentElement.outerHTML,
+                    getText: () => document.body.innerText,
+                    getTextContent: (sel) => document.querySelector(sel)?.textContent || null,
+                    getInnerHTML: (sel) => document.querySelector(sel)?.innerHTML || null,
+                    click: (sel) => { const el = document.querySelector(sel); if (el) { el.click(); return true; } return false; },
+                    getLinks: () => Array.from(document.querySelectorAll('a[href]')).map(a => ({ text: a.textContent.trim(), href: a.href })),
+                    getImages: () => Array.from(document.querySelectorAll('img')).map(img => ({ src: img.src, alt: img.alt })),
+                    getValue: (sel) => document.querySelector(sel)?.value || null,
+                    setValue: (sel, val) => { const el = document.querySelector(sel); if (el) { el.value = val; el.dispatchEvent(new Event('input', { bubbles: true })); return true; } return false; },
+                    scrollTo: (x, y) => { window.scrollTo(x, y); return true; },
+                    scrollTop: () => window.scrollY,
+                    getMeta: (name) => document.querySelector(`meta[name="${name}"]`)?.content || document.querySelector(`meta[property="${name}"]`)?.content || null
+                };
+                const fn = fnMap[funcName];
+                if (!fn) return { error: 'Unknown function: ' + funcName };
                 try {
-                    // eslint-disable-next-line no-eval
-                    const result = eval(userCode);
-                    if (result && typeof result.then === 'function') {
-                        return result.then(r => ({ success: true, value: r }));
-                    }
+                    const result = funcArgs ? fn(...funcArgs, selectorArg) : fn(selectorArg);
                     return { success: true, value: result };
                 } catch(e) {
-                    return { success: false, error: e.message };
+                    return { error: e.message };
                 }
             },
-            args: [code]
+            args: [fnName, args, selector]
         }).then(results => {
             if (results && results[0] && results[0].result) {
                 const r = results[0].result;
-                if (r.success) {
-                    sendResponse({ success: true, result: r.value });
-                } else {
-                    sendResponse({ success: false, error: r.error });
-                }
+                if (r.error) sendResponse({ success: false, error: r.error });
+                else sendResponse({ success: true, result: r.value });
             } else {
                 sendResponse({ success: false, error: "executeScript returned empty" });
             }

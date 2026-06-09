@@ -278,19 +278,20 @@
     // 新增指令实现（v1.1）
     // ============================================================
 
-    // execute_js — 通过 background.js 执行（绕过页面 CSP）
+    // execute_js — 通过 background.js 执行（预定义函数）
     async function cmdExecuteJS(params) {
-        const code = params.code;
-        if (!code) return { success: false, message: "missing code" };
+        const fn = params.fn || params.code;
+        const args = params.args || [];
+        const selector = params.selector;
+        if (!fn) return { success: false, message: "missing fn (function name)" };
         
         return new Promise((resolve) => {
-            // 超时保护：background.js 不响应时防止 isRunning 永久卡死
             const timeout = setTimeout(() => {
                 resolve({ success: false, message: "execute_js timeout (15秒)" });
             }, 15000);
             
             chrome.runtime.sendMessage(
-                { type: "execute_js_request", code: code },
+                { type: "execute_js_request", fn: fn, args: args, selector: selector },
                 (response) => {
                     clearTimeout(timeout);
                     if (response && response.success) {

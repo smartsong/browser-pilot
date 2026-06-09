@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+import sys
+import io
+
+# 重定向 stdout/stderr 到文件
+_log_file = open(r'E:\QClaw\workspace\projects\browser-pilot\server.log', 'a', encoding='utf-8')
+class _Logger:
+    def write(self, s):
+        _log_file.write(s)
+        _log_file.flush()
+    def flush(self):
+        _log_file.flush()
+sys.stdout = _Logger()
+sys.stderr = _Logger()
+
 # -*- coding: utf-8 -*-
 """
 Browser Pilot — 本地服务 v0.3.4
@@ -66,9 +80,12 @@ class PilotHandler(BaseHTTPRequestHandler):
                     return
 
             # 查找发给这个 tab 的待处理任务
+            print(f"[POLL] 检查 {len(tasks)} 个任务, tab_id={tab_id}")
             for tid, t in tasks.items():
+                print(f"[POLL]   任务 {tid}, status={t['status']}, target={t['target_tab']}")
                 if t["status"] == "pending" and (t["target_tab"] is None or t["target_tab"] == tab_id):
                     t["status"] = "running"
+                    print(f"[POLL] ✅ 分配任务 {tid} 给 {tab_id}")
                     self._json(200, {"task_id": tid, "command": t["command"]})
                     return
 
@@ -90,6 +107,23 @@ class PilotHandler(BaseHTTPRequestHandler):
             else:
                 self._json(400, {"error": "missing tab_id"})
 
+
+
+        elif path == "/force_assign":
+            tid = qs.get("task_id", [None])[0]
+            if not tid or tid not in tasks:
+                self._json(400, {"error": "invalid task_id"})
+                return
+            t = tasks[tid]
+            t["status"] = "running"
+            self._json(200, {"task_id": tid, "command": t["command"], "forced": True})
+        elif path == "/debug":
+            import json as _json
+            debug_data = {
+                "tasks": {tid: {"status": t["status"], "target_tab": t["target_tab"], "action": t["command"].get("action")} for tid, t in tasks.items()},
+                "tabs": {tid: {"title": info["title"], "url": info["url"], "last_seen": info["last_seen"]} for tid, info in tabs.items()}
+            }
+            self._json(200, debug_data)
         elif path == "/result":
             tid = qs.get("task_id", [None])[0]
             if tid and tid in tasks:
@@ -163,6 +197,23 @@ class PilotHandler(BaseHTTPRequestHandler):
             print(f"[Pilot] 新指令 {action}{target} [{tid}]")
             self._json(200, {"task_id": tid, "status": "pending", "target_tab": tab_id})
 
+
+
+        elif path == "/force_assign":
+            tid = qs.get("task_id", [None])[0]
+            if not tid or tid not in tasks:
+                self._json(400, {"error": "invalid task_id"})
+                return
+            t = tasks[tid]
+            t["status"] = "running"
+            self._json(200, {"task_id": tid, "command": t["command"], "forced": True})
+        elif path == "/debug":
+            import json as _json
+            debug_data = {
+                "tasks": {tid: {"status": t["status"], "target_tab": t["target_tab"], "action": t["command"].get("action")} for tid, t in tasks.items()},
+                "tabs": {tid: {"title": info["title"], "url": info["url"], "last_seen": info["last_seen"]} for tid, info in tabs.items()}
+            }
+            self._json(200, debug_data)
         elif path == "/result":
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length)
