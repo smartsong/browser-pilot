@@ -25,6 +25,7 @@ PORT = 19789
 tasks = {}
 tabs = {}  # tab_id -> {"title": ..., "url": ..., "first_seen": ..., "last_seen": ...}
 TAB_TIMEOUT = 300  # 5分钟无心跳视为过期
+numeric_to_string = {}  # 数字 tab_id -> 字符串 tab_id 映射（new_tab 用）
 
 
 class PilotHandler(BaseHTTPRequestHandler):
@@ -81,8 +82,12 @@ class PilotHandler(BaseHTTPRequestHandler):
             if tid and tid in tasks:
                 t = tasks[tid]
                 if t["status"] == "done":
-                    result = tasks.pop(tid)
-                    self._json(200, result["result"])
+                    # 不直接 pop，标记为 consumed 避免重复查询
+                    t["status"] = "consumed"
+                    self._json(200, t["result"])
+                elif t["status"] == "consumed":
+                    # 已查询过，直接返回结果
+                    self._json(200, t["result"])
                 else:
                     self._json(200, {"status": t["status"], "result": None})
             else:
