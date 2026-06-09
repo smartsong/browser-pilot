@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Browser Pilot — 本地服务 v0.3.2
+Browser Pilot — 本地服务 v0.3.4
 修复：
   - list_tabs result 不再 pop，改为标记 consumed
   - new_tab 等待注册后返回字符串 tab_id
@@ -43,7 +43,7 @@ class PilotHandler(BaseHTTPRequestHandler):
         qs = parse_qs(parsed.query)
 
         if path == "/health":
-            self._json(200, {"status": "ok", "version": "0.3.3-DEBUG", "active_tabs": len(self._active_tabs())})
+            self._json(200, {"status": "ok", "version": "0.3.4", "active_tabs": len(self._active_tabs())})
 
         elif path == "/tabs":
             active = self._active_tabs()
@@ -146,6 +146,11 @@ class PilotHandler(BaseHTTPRequestHandler):
                 else:
                     tab_id = str(raw_tab)
 
+            # 方案2：拒绝无 tab_id 的指令（避免竞态）
+            if tab_id is None:
+                self._json(400, {"error": "must specify tab_id"})
+                return
+
             tid = str(uuid.uuid4())[:8]
             tasks[tid] = {
                 "command": cmd,
@@ -247,7 +252,7 @@ def main():
     cleaner.start()
 
     server = HTTPServer((HOST, PORT), PilotHandler)
-    print(f"[Browser Pilot v0.3.2] 服务已启动 -> http://{HOST}:{PORT}")
+    print(f"[Browser Pilot v0.3.4] 服务已启动 -> http://{HOST}:{PORT}")
     print(f"  POST /command       提交指令（支持 tab_id 参数定向）")
     print(f"  GET  /poll?tab_id=   content.js 轮询（tab_id 必传）")
     print(f"  GET  /register       content.js 注册/心跳")
