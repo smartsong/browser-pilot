@@ -39,10 +39,11 @@ class PilotHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
+        print(f"[GET] {path}")  # ← DEBUG
         qs = parse_qs(parsed.query)
 
         if path == "/health":
-            self._json(200, {"status": "ok", "version": "0.3.2", "active_tabs": len(self._active_tabs())})
+            self._json(200, {"status": "ok", "version": "0.3.3-DEBUG", "active_tabs": len(self._active_tabs())})
 
         elif path == "/tabs":
             active = self._active_tabs()
@@ -72,6 +73,22 @@ class PilotHandler(BaseHTTPRequestHandler):
                     return
 
             self._json(200, {"task_id": None, "command": None})
+
+        elif path == "/register":
+            print(f"[REGISTER] {qs}")  # ← DEBUG
+            tab_id = qs.get("tab_id", [None])[0]
+            title = qs.get("title", [""])[0]
+            url = qs.get("url", [""])[0]
+            if tab_id:
+                tabs[tab_id] = {
+                    "title": title,
+                    "url": url,
+                    "first_seen": time.time(),
+                    "last_seen": time.time()
+                }
+                self._json(200, {"success": True})
+            else:
+                self._json(400, {"error": "missing tab_id"})
 
         elif path == "/result":
             tid = qs.get("task_id", [None])[0]
