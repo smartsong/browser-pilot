@@ -22,17 +22,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             return false;
         }
 
-        // 直接用 world: "MAIN" 注入，不受页面 CSP 限制
-        // 注意：不使用 new Function()，改用 eval 直接执行（扩展注入的代码不受 CSP 限制）
+        // 方案4: 使用 world: ISOLATED (扩展世界)
+        // ISOLATED world 完全不受页面 CSP 限制
+        // 限制：只能访问页面的 DOM，不能访问页面的 JS 变量/函数
+        // 对于需要访问页面 JS 变量的场景，用 ISOLATED world 通过 DOM 传值
         chrome.scripting.executeScript({
             target: { tabId: sender.tab.id },
+            world: "ISOLATED",
             func: (userCode) => {
                 try {
-                    // 在 MAIN world 执行，CSP 不拦截扩展注入的代码
-                    // 注意：不使用 new Function()，避免 CSP unsafe-eval 限制
                     // eslint-disable-next-line no-eval
                     const result = eval(userCode);
-                    // 处理异步结果
                     if (result && typeof result.then === 'function') {
                         return result.then(r => ({ success: true, value: r }));
                     }
@@ -41,8 +41,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     return { success: false, error: e.message };
                 }
             },
-            args: [code],
-            world: "MAIN"
+            args: [code]
         }).then(results => {
             if (results && results[0] && results[0].result) {
                 const r = results[0].result;
