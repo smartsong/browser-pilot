@@ -1,65 +1,56 @@
-// background.js — Browser Pilot 后台 Service Worker v1.1
-// 新增：execute_js（绕过CSP）、截图、下载、多标签页管理
+// background.js — Browser Pilot 后台 Service Worker v1.2
+// 修复：execute_js 改用 world: "MAIN" 直接注入，绕过 CSP
 
 // 监听扩展安装
 chrome.runtime.onInstalled.addListener(() => {
-    console.log('🤖 [Browser Pilot] 扩展已安装/更新 v1.1');
+    console.log('🤖 [Browser Pilot] 扩展已安装/更新 v1.2');
 });
 
-// 监听来自 content script 的消息
+// 标签页心跳字典
+const tabs = {};
+
+// ============================================================
+// 处理来自 content script 的消息
+// ============================================================
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     
-    // ========== execute_js（world: MAIN 绕过 CSP）==========
+    // ========== execute_js（world: "MAIN" 绕过 CSP）==========
     if (request.type === "execute_js_request") {
-        // 注入 script 标签执行代码，绕过 CSP 对 eval 的限制
-        // 先创建一个临时全局变量接收结果
+        const code = request.code;
+        if (!code) {
+            sendResponse({ success: false, error: "missing code" });
+            return false;
+        }
+
+        // 直接用 world: "MAIN" 注入，不受页面 CSP 限制
         chrome.scripting.executeScript({
             target: { tabId: sender.tab.id },
-            func: () => { window.__bp_result__ = undefined; }
-        }).then(() => {
-            // 通过 content script 注入 <script> 标签执行用户代码
-            chrome.scripting.executeScript({
-                target: { tabId: sender.tab.id },
-                func: (code) => {
-                    return new Promise((resolve) => {
-                        const script = document.createElement('script');
-                        script.textContent = `
-                            try {
-                                var __bp_raw__ = (function() { ${code} })();
-                                window.__bp_result__ = { value: __bp_raw__ };
-                            } catch(e) {
-                                window.__bp_result__ = { error: e.message };
-                            }
-                        `;
-                        document.documentElement.appendChild(script);
-                        script.remove();
-                        // 轮询结果
-                        const check = () => {
-                            if (window.__bp_result__ !== undefined) {
-                                resolve(window.__bp_result__);
-                            } else {
-                                setTimeout(check, 10);
-                            }
-                        };
-                        check();
-                    });
-                },
-                args: [request.code],
-                world: "MAIN"
-            }).then(results => {
-                if (results && results[0] && results[0].result !== undefined) {
-                    const r = results[0].result;
-                    if (r.error) {
-                        sendResponse({ success: false, error: r.error });
-                    } else {
-                        sendResponse({ success: true, result: r.value });
+            func: (userCode) => {
+                try {
+                    // 在 MAIN world 执行，CSP 不拦截扩展注入的代码
+                    const result = new Function(userCode)();
+                    // 处理异步结果
+                    if (result && typeof result.then === 'function') {
+                        return result.then(r => ({ success: true, value: r }));
                     }
-                } else {
-                    sendResponse({ success: false, error: "executeScript returned empty" });
+                    return { success: true, value: result };
+                } catch(e) {
+                    return { success: false, error: e.message };
                 }
-            }).catch(error => {
-                sendResponse({ success: false, error: error.message || String(error) });
-            });
+            },
+            args: [code],
+            world: "MAIN"
+        }).then(results => {
+            if (results && results[0] && results[0].result) {
+                const r = results[0].result;
+                if (r.success) {
+                    sendResponse({ success: true, result: r.value });
+                } else {
+                    sendResponse({ success: false, error: r.error });
+                }
+            } else {
+                sendResponse({ success: false, error: "executeScript returned empty" });
+            }
         }).catch(error => {
             sendResponse({ success: false, error: error.message || String(error) });
         });
@@ -100,7 +91,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             if (chrome.runtime.lastError) {
                 sendResponse({ success: false, error: chrome.runtime.lastError.message });
             } else {
-                sendResponse({ success: true, tab_id: tab.id, tab_url: tab.url });
+                sendResponse({ success: true, tab_id: String(tab.id), tab_url: tab.url });
             }
         });
         return true;
@@ -108,11 +99,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     // ========== 切换标签页 ==========
     if (request.type === "switch_tab_request") {
-        chrome.tabs.update(parseInt(request.tab_id), { active: true }, (tab) => {
+        const tabId = parseInt(request.tab_id);
+        chrome.tabs.update(tabId, { active: true }, (tab) => {
             if (chrome.runtime.lastError) {
                 sendResponse({ success: false, error: chrome.runtime.lastError.message });
             } else {
-                sendResponse({ success: true, tab_id: tab.id });
+                sendResponse({ success: true, tab_id: String(tab.id) });
             }
         });
         return true;
@@ -120,7 +112,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     // ========== 关闭标签页 ==========
     if (request.type === "close_tab_request") {
-        chrome.tabs.remove(parseInt(request.tab_id), () => {
+        const tabId = parseInt(request.tab_id);
+        chrome.tabs.remove(tabId, () => {
             if (chrome.runtime.lastError) {
                 sendResponse({ success: false, error: chrome.runtime.lastError.message });
             } else {
@@ -137,7 +130,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 sendResponse({ success: false, error: chrome.runtime.lastError.message });
             } else {
                 const tabList = tabs.map(tab => ({
-                    id: tab.id,
+                    id: String(tab.id),
                     title: tab.title,
                     url: tab.url,
                     active: tab.active
@@ -148,10 +141,42 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
-    // ========== 注册心跳（保留原逻辑）==========
+    // ========== 注册心跳 ==========
     if (request.type === "register") {
-        console.log('🤖 [BP] 标签页注册:', request.tab_id);
+        const tabId = request.tab_id;
+        tabs[tabId] = {
+            title: request.title,
+            url: request.url,
+            last_seen: Date.now()
+        };
+        console.log('🤖 [BP] 标签页注册:', tabId, request.title);
         sendResponse({ success: true });
     }
 
+    // ========== 轮询任务 ==========
+    if (request.type === "poll") {
+        const tabId = request.tab_id;
+        // 更新最后访问时间
+        if (tabs[tabId]) {
+            tabs[tabId].last_seen = Date.now();
+        }
+        // 查找分配给此 tab 的待处理任务
+        // 简化版：暂时返回 null（任务分发由 server.py 处理）
+        sendResponse({ task_id: null, command: null });
+        return false;
+    }
+
 });
+
+// 清理过期标签页（每60秒）
+setInterval(() => {
+    const now = Date.now();
+    for (const [tabId, info] of Object.entries(tabs)) {
+        if (now - info.last_seen > 300000) {  // 5分钟过期
+            delete tabs[tabId];
+            console.log('🤖 [BP] 清理过期标签页:', tabId);
+        }
+    }
+}, 60000);
+
+console.log('🤖 [Browser Pilot] background.js v1.2 已加载');

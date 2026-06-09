@@ -1,6 +1,6 @@
 // content.js — Browser Pilot 内容脚本 v1.2
-// 修复：new_tab 创建后等待新标签注册，返回字符串 tab_id
-// 修复：execute_js 超时保护（8秒）
+// 修复：execute_js 改用 background.js + world: MAIN 注入
+// 修复：new_tab 等待注册返回字符串 tab_id
 
 (function() {
     'use strict';
@@ -280,8 +280,8 @@
         return new Promise((resolve) => {
             // 超时保护：background.js 不响应时防止 isRunning 永久卡死
             const timeout = setTimeout(() => {
-                resolve({ success: false, message: "execute_js timeout (background.js 未响应)" });
-            }, 8000);
+                resolve({ success: false, message: "execute_js timeout (15秒)" });
+            }, 15000);
             
             chrome.runtime.sendMessage(
                 { type: "execute_js_request", code: code },

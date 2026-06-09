@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Browser Pilot",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "AI操控浏览器的桥梁 — 独立扩展版（替代油猴）",
   "author": "苏岚",
   "permissions": [
